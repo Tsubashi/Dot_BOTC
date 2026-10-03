@@ -107,7 +107,7 @@ async def remove_queue(user_id):
             }
         cooldowns[str(user_id)]["Cooldown"] = current_time + BEGINNER_COOLDOWN_DURATION
         del queue[str(user_id)]
-        
+
         update_queue_positions()
         save_json(cooldowns_file_path, cooldowns)
         save_json(livequeue_file_path, queue)
@@ -194,7 +194,7 @@ async def list_queue(interaction: nextcord.Interaction):
     else:
         beginner_any_queue = [entry for entry in sorted_queue if entry["QueueType"] in ["Beginner", "Any"]]
         pickup_any_queue = [entry for entry in sorted_queue if entry["QueueType"] in ["Pickup", "Any"]]
-        
+
         embed = nextcord.Embed(title="Beginner/Any Queue List")
         t = '\n'.join(
             [f'{entry["DisplayName"]} | {str(entry["Notes"])[:100] if entry["Notes"] else "None"}' for entry in beginner_any_queue])
@@ -216,14 +216,14 @@ async def leave_queue(interaction: nextcord.Interaction, user_id = None):
         user = await bot.fetch_user(user_id)
     else:
         user = interaction.user
-            
+
     current_time = int(time.time())
 
     if str(user.id) in queue:
         queue_type = queue[str(user.id)]["QueueType"]
         cooldowns[str(user.id)]["Cooldown"] = current_time + LEAVE_COOLDOWN_DURATION
         del queue[str(user.id)]
-        
+
         update_queue_positions()
 
         if queue_type == "Beginner":
@@ -246,7 +246,7 @@ async def removefromqueue(interaction: nextcord.Interaction, user: nextcord.Memb
         queue_type = queue[str(user.id)]["QueueType"]
         cooldowns[str(user.id)]["Cooldown"] = current_time + LEAVE_COOLDOWN_DURATION
         del queue[str(user.id)]
-        
+
         update_queue_positions()
 
         if queue_type == "Beginner":
@@ -330,14 +330,14 @@ async def finish(interaction: nextcord.Interaction):
     QueueType = active_storytellers[str(user.id)]["QueueType"]
     if is_active_storyteller(user.id):
         remove_active_storyteller(user.id)
-        await interaction.response.send_message(f"{user.display_name} has finished their game, please wait whilst the next ST is alerted. Feedback Form: https://docs.google.com/forms/d/e/1FAIpQLSduvl3LXwlenwc-uomQhiMY4iKOtjvSEF4jVezQMJGvATltQQ/viewform")
+        await interaction.response.send_message(f"{user.display_name} has finished their game, please wait whilst the next ST is alerted. To submit feedback, use </feedback:1554466008985510022>")
         update_queue_positions()
         if QueueType == "Beginner":
-            BEGINNER_CHANNEL_ID = interaction.channel.id 
-            MERGED_CHANNEL_ID = interaction.channel.id  
+            BEGINNER_CHANNEL_ID = interaction.channel.id
+            MERGED_CHANNEL_ID = interaction.channel.id
         elif QueueType == "Pickup":
             PICKUP_CHANNEL_ID = interaction.channel.id
-            MERGED_CHANNEL_ID = interaction.channel.id 
+            MERGED_CHANNEL_ID = interaction.channel.id
         return BEGINNER_CHANNEL_ID, PICKUP_CHANNEL_ID, MERGED_CHANNEL_ID
     else:
         await interaction.response.send_message("You are not active in the queue.")
@@ -350,14 +350,14 @@ async def forcefinish(interaction: nextcord.Interaction, player: nextcord.Member
     QueueType = active_storytellers[str(player.id)]["QueueType"]
     if is_active_storyteller(player.id):
         remove_active_storyteller(player.id)
-        await interaction.response.send_message(f"{player.display_name} has been force finished and removed from the queue. Feedback Form: https://docs.google.com/forms/d/e/1FAIpQLSduvl3LXwlenwc-uomQhiMY4iKOtjvSEF4jVezQMJGvATltQQ/viewform")
+        await interaction.response.send_message(f"{player.display_name} has been force finished and removed from the queue. To submit feedback, use </feedback:1554466008985510022>")
         update_queue_positions()
         if QueueType == "Beginner":
-            BEGINNER_CHANNEL_ID = interaction.channel.id 
-            MERGED_CHANNEL_ID = interaction.channel.id  
+            BEGINNER_CHANNEL_ID = interaction.channel.id
+            MERGED_CHANNEL_ID = interaction.channel.id
         elif QueueType == "Pickup":
             PICKUP_CHANNEL_ID = interaction.channel.id
-            MERGED_CHANNEL_ID = interaction.channel.id 
+            MERGED_CHANNEL_ID = interaction.channel.id
         return BEGINNER_CHANNEL_ID, PICKUP_CHANNEL_ID, MERGED_CHANNEL_ID
     else:
         await interaction.response.send_message(f"{player.display_name} is not active in the queue.")
@@ -764,7 +764,7 @@ async def check_queue():
 
                     for i in range(100):
                         if str(user.id) in queue and not is_active_storyteller(user.id):
-                            await asyncio.sleep(TIMEOUT_TIMER/100)  # Wait for 5 minutes  
+                            await asyncio.sleep(TIMEOUT_TIMER/100)  # Wait for 5 minutes
                         else:
                             return
 
@@ -778,4 +778,3 @@ bot.load_extension("townsquare_spy.discord", extras=dict(db_path="townsquare.db"
 
 # Add other necessary commands and functionality as needed
 bot.run(os.environ['DISCORD_TOKEN'])
-
