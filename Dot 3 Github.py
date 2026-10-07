@@ -330,7 +330,7 @@ async def finish(interaction: nextcord.Interaction):
     QueueType = active_storytellers[str(user.id)]["QueueType"]
     if is_active_storyteller(user.id):
         remove_active_storyteller(user.id)
-        await interaction.response.send_message(f"{user.display_name} has finished their game, please wait whilst the next ST is alerted. To submit feedback, use </feedback:1554466008985510022>")
+        await interaction.response.send_message(f"{user.display_name} has finished their game, please wait whilst the next ST is alerted. To submit feedback, use </feedback:1555321074931998721>")
         update_queue_positions()
         if QueueType == "Beginner":
             BEGINNER_CHANNEL_ID = interaction.channel.id
@@ -350,7 +350,7 @@ async def forcefinish(interaction: nextcord.Interaction, player: nextcord.Member
     QueueType = active_storytellers[str(player.id)]["QueueType"]
     if is_active_storyteller(player.id):
         remove_active_storyteller(player.id)
-        await interaction.response.send_message(f"{player.display_name} has been force finished and removed from the queue. To submit feedback, use </feedback:1554466008985510022>")
+        await interaction.response.send_message(f"{player.display_name} has been force finished and removed from the queue. To submit feedback, use </feedback:1555321074931998721>")
         update_queue_positions()
         if QueueType == "Beginner":
             BEGINNER_CHANNEL_ID = interaction.channel.id
