@@ -48,6 +48,12 @@ BEGINNER_CHANNEL_ID = int(os.environ["BEGINNER_CHANNEL_ID"])
 PICKUP_CHANNEL_ID = int(os.environ["PICKUP_CHANNEL_ID"])
 MERGED_CHANNEL_ID = PICKUP_CHANNEL_ID
 
+# Role pinged when a storyteller finishes and nobody is waiting in the queue
+LFST_ROLE_ID = int(os.environ["LFST_ROLE_ID"])
+# True once the LFST countdown has expired and nobody has claimed the slot yet.
+# While open, /join ignores cooldowns. Cleared when anyone joins or starts.
+LFST_OPEN = False
+
 # Ensure the files exist
 for file_path in [livequeue_file_path, cooldowns_file_path, active_st_file_path]:
     if not os.path.exists(file_path):
@@ -83,6 +89,8 @@ def is_active_storyteller(user_id):
 
 
 def add_active_storyteller(user, queue_type):
+    global LFST_OPEN
+    LFST_OPEN = False
     if queue_type == "Any":
         queue_type = queue[str(user.id)]["QueueType"]
     active_storytellers[str(user.id)] = {
@@ -127,6 +135,38 @@ async def remove_queue(user_id):
         save_json(livequeue_file_path, queue)
 
 
+def no_storyteller_active():
+    return not any(is_active_storyteller(user_id) for user_id in active_storytellers)
+
+
+def queue_is_empty_for(queue_type):
+    """True if nobody waiting in the queue could take a game of this type."""
+    if MERGED:
+        return not queue
+    return not any(
+        entry["QueueType"] in [queue_type, "Any"] for entry in queue.values()
+    )
+
+
+async def notify_lfst_if_queue_empty(channel, queue_type):
+    """Ping LFST when a game ends with nobody waiting, then open the slot to all after 5 minutes."""
+    global LFST_OPEN
+    if not (no_storyteller_active() and queue_is_empty_for(queue_type)):
+        return
+
+    LFST_OPEN = False
+    expiry_timestamp = int(time.time()) + TIMEOUT_TIMER
+    await channel.send(
+        f"<@&{LFST_ROLE_ID}> Queue is empty, anyone can storytell <t:{expiry_timestamp}:R>."
+    )
+
+    await asyncio.sleep(TIMEOUT_TIMER)
+    LFST_OPEN = True
+    await channel.send(
+        "LFST cooldown expired. If the queue is still empty, anyone can now storytell."
+    )
+
+
 @bot.event
 async def on_ready():
     print(f"Bot connected as {bot.user}")
@@ -148,6 +188,7 @@ async def join(
         required=True,
     ),
 ):
+    global LFST_OPEN
     user = interaction.user
     current_time = time.time()
     join_threshold = datetime.now(timezone.utc) - timedelta(weeks=2)
@@ -158,14 +199,20 @@ async def join(
         )
         return
 
-    # Check if the user is on cooldown
-    if str(user.id) in cooldowns and cooldowns[str(user.id)]["Cooldown"] > current_time:
+    # Check if the user is on cooldown, unless the LFST window is open and the slot is unclaimed
+    on_cooldown = (
+        str(user.id) in cooldowns and cooldowns[str(user.id)]["Cooldown"] > current_time
+    )
+    lfst_window_open = (
+        LFST_OPEN and no_storyteller_active() and queue_is_empty_for(queue_type)
+    )
+    if on_cooldown and not lfst_window_open:
         await interaction.response.send_message(
             "You are currently on cooldown and cannot join the queue."
         )
         return
 
-    # Check if the user is on cooldown
+    # Check if the user is already in the queue
     if str(user.id) in queue:
         await interaction.response.send_message(
             "You are currently in the queue and cannot re-join the queue."
@@ -193,6 +240,7 @@ async def join(
 
     queue[str(user.id)] = new_entry
     cooldowns[str(user.id)] = cooldown_entry
+    LFST_OPEN = False
 
     await interaction.response.send_message(
         f"{user.display_name} has been added to the queue."
@@ -416,8 +464,8 @@ async def finish(interaction: nextcord.Interaction):
     global PICKUP_CHANNEL_ID
     global MERGED_CHANNEL_ID
     user = interaction.user
-    QueueType = active_storytellers[str(user.id)]["QueueType"]
     if is_active_storyteller(user.id):
+        QueueType = active_storytellers[str(user.id)]["QueueType"]
         remove_active_storyteller(user.id)
         await interaction.response.send_message(
             f"{user.display_name} has finished their game, please wait whilst the next ST is alerted. To submit feedback, use </feedback:1555321074931998721>"
@@ -429,7 +477,7 @@ async def finish(interaction: nextcord.Interaction):
         elif QueueType == "Pickup":
             PICKUP_CHANNEL_ID = interaction.channel.id
             MERGED_CHANNEL_ID = interaction.channel.id
-        return BEGINNER_CHANNEL_ID, PICKUP_CHANNEL_ID, MERGED_CHANNEL_ID
+        await notify_lfst_if_queue_empty(interaction.channel, QueueType)
     else:
         await interaction.response.send_message("You are not active in the queue.")
 
@@ -439,8 +487,8 @@ async def forcefinish(interaction: nextcord.Interaction, player: nextcord.Member
     global BEGINNER_CHANNEL_ID
     global PICKUP_CHANNEL_ID
     global MERGED_CHANNEL_ID
-    QueueType = active_storytellers[str(player.id)]["QueueType"]
     if is_active_storyteller(player.id):
+        QueueType = active_storytellers[str(player.id)]["QueueType"]
         remove_active_storyteller(player.id)
         await interaction.response.send_message(
             f"{player.display_name} has been force finished and removed from the queue. To submit feedback, use </feedback:1555321074931998721>"
@@ -452,7 +500,7 @@ async def forcefinish(interaction: nextcord.Interaction, player: nextcord.Member
         elif QueueType == "Pickup":
             PICKUP_CHANNEL_ID = interaction.channel.id
             MERGED_CHANNEL_ID = interaction.channel.id
-        return BEGINNER_CHANNEL_ID, PICKUP_CHANNEL_ID, MERGED_CHANNEL_ID
+        await notify_lfst_if_queue_empty(interaction.channel, QueueType)
     else:
         await interaction.response.send_message(
             f"{player.display_name} is not active in the queue."
