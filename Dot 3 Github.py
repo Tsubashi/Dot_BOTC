@@ -29,19 +29,19 @@ active_st_file_path = os.path.join(os.path.dirname(__file__), "ActiveStoryteller
 New_ST_Exceptions_path = os.path.join(os.path.dirname(__file__), "NewSTExceptions.json")
 
 # Define global cooldown durations (18 hours in seconds)
-BEGINNER_COOLDOWN_DURATION = 64800
-PICKUP_COOLDOWN_DURATION = 64800
-ANY_COOLDOWN_DURATION = 64800
-REMOVECOOLDOWN_COOLDOWN_DURATION = 5184000  # 60 Days
-RE_RACK_TIMER_DURATION = 2400  # 40 minutes
+BEGINNER_COOLDOWN_DURATION = int(os.environ["BEGINNER_COOLDOWN_DURATION"])
+PICKUP_COOLDOWN_DURATION = int(os.environ["PICKUP_COOLDOWN_DURATION"])
+ANY_COOLDOWN_DURATION = int(os.environ["ANY_COOLDOWN_DURATION"])
+REMOVECOOLDOWN_COOLDOWN_DURATION = int(os.environ["REMOVECOOLDOWN_COOLDOWN_DURATION"])
+RE_RACK_TIMER_DURATION = int(os.environ["RE_RACK_TIMER_DURATION"])
 
 # Define cooldown duration for leaving the queue (1 hour in seconds)
-LEAVE_COOLDOWN_DURATION = 3600
+LEAVE_COOLDOWN_DURATION = int(os.environ["LEAVE_COOLDOWN_DURATION"])
 
 # Define global merged status, games running status, and timer
 MERGED = True
 GAMES_RUNNING = False
-TIMEOUT_TIMER = 300  # 5 minutes
+TIMEOUT_TIMER = int(os.environ["TIMEOUT_TIMER"])
 
 # Channel IDs
 BEGINNER_CHANNEL_ID = int(os.environ["BEGINNER_CHANNEL_ID"])
@@ -50,9 +50,17 @@ MERGED_CHANNEL_ID = PICKUP_CHANNEL_ID
 
 # Role pinged when a storyteller finishes and nobody is waiting in the queue
 LFST_ROLE_ID = int(os.environ["LFST_ROLE_ID"])
-# True once the LFST countdown has expired and nobody has claimed the slot yet.
-# While open, /join ignores cooldowns. Cleared when anyone joins or starts.
-LFST_OPEN = False
+
+# Flags for managing the state of the LFST cycle and queue status
+# These are keyed by queue ("Merged", or "Beginner"/"Pickup" when split).
+
+# lfst_armed holds queues where a game finished and the slot hasn't been claimed
+# yet. This will prompt check_queue to start a ping cycle.
+lfst_armed = set()
+# lfst_state will be one of the following for each queue:
+# None (idle), {"phase": "counting", "deadline": ts}, or {"phase": "open"}.
+# When a queue is "open", /join ignores cooldowns and allows anyone to /join.
+lfst_state = {}
 
 # Ensure the files exist
 for file_path in [livequeue_file_path, cooldowns_file_path, active_st_file_path]:
@@ -89,10 +97,9 @@ def is_active_storyteller(user_id):
 
 
 def add_active_storyteller(user, queue_type):
-    global LFST_OPEN
-    LFST_OPEN = False
     if queue_type == "Any":
         queue_type = queue[str(user.id)]["QueueType"]
+    lfst_armed.discard(lfst_key_for(queue_type))
     active_storytellers[str(user.id)] = {
         "DisplayName": user.display_name,
         "Discord_ID": user.id,
@@ -135,36 +142,79 @@ async def remove_queue(user_id):
         save_json(livequeue_file_path, queue)
 
 
-def no_storyteller_active():
-    return not any(is_active_storyteller(user_id) for user_id in active_storytellers)
+def lfst_queue_keys():
+    return ["Merged"] if MERGED else ["Beginner", "Pickup"]
 
 
-def queue_is_empty_for(queue_type):
-    """True if nobody waiting in the queue could take a game of this type."""
+def lfst_key_for(queue_type):
+    return "Merged" if MERGED else queue_type
+
+
+def lfst_channel_id(queue_key):
+    return {
+        "Merged": MERGED_CHANNEL_ID,
+        "Beginner": BEGINNER_CHANNEL_ID,
+        "Pickup": PICKUP_CHANNEL_ID,
+    }[queue_key]
+
+
+def slot_unclaimed(queue_key):
+    """True when nobody is running a game for this queue and nobody is waiting to."""
+    if queue_key == "Merged":
+        active = any(is_active_storyteller(uid) for uid in active_storytellers)
+        waiting = bool(queue)
+    else:
+        types = [queue_key, "Any"]
+        active = any(st["QueueType"] in types for st in active_storytellers.values())
+        waiting = any(entry["QueueType"] in types for entry in queue.values())
+    return not active and not waiting
+
+
+def lfst_window_open(queue_type):
+    """True if someone joining this queue type may bypass their cooldown."""
     if MERGED:
-        return not queue
-    return not any(
-        entry["QueueType"] in [queue_type, "Any"] for entry in queue.values()
+        keys = ["Merged"]
+    elif queue_type == "Any":
+        keys = ["Beginner", "Pickup"]
+    else:
+        keys = [queue_type]
+    return any(
+        (lfst_state.get(key) or {}).get("phase") == "open" and slot_unclaimed(key)
+        for key in keys
     )
 
 
-async def notify_lfst_if_queue_empty(channel, queue_type):
-    """Ping LFST when a game ends with nobody waiting, then open the slot to all after 5 minutes."""
-    global LFST_OPEN
-    if not (no_storyteller_active() and queue_is_empty_for(queue_type)):
-        return
+async def lfst_tick():
+    """Advance the LFST ping cycle for each queue. Called from check_queue every tick."""
+    now = int(time.time())
+    current_keys = lfst_queue_keys()
 
-    LFST_OPEN = False
-    expiry_timestamp = int(time.time()) + TIMEOUT_TIMER
-    await channel.send(
-        f"<@&{LFST_ROLE_ID}> Queue is empty, anyone can storytell <t:{expiry_timestamp}:R>."
-    )
+    # Forget state for queues that don't exist in the current merge mode
+    for key in list(lfst_state):
+        if key not in current_keys:
+            lfst_state[key] = None
 
-    await asyncio.sleep(TIMEOUT_TIMER)
-    LFST_OPEN = True
-    await channel.send(
-        "LFST cooldown expired. If the queue is still empty, anyone can now storytell."
-    )
+    for key in current_keys:
+        if not slot_unclaimed(key):
+            # Someone is waiting or running a game, so any cycle in progress is over.
+            # The queue stays armed, so if they drop out later a fresh ping goes out.
+            lfst_state[key] = None
+            continue
+
+        state = lfst_state.get(key)
+        if state is None:
+            if key not in lfst_armed:
+                continue
+            deadline = now + TIMEOUT_TIMER
+            lfst_state[key] = {"phase": "counting", "deadline": deadline}
+            await bot.get_channel(lfst_channel_id(key)).send(
+                f"<@&{LFST_ROLE_ID}> Queue is empty, anyone can storytell <t:{deadline}:R>."
+            )
+        elif state["phase"] == "counting" and now >= state["deadline"]:
+            lfst_state[key] = {"phase": "open"}
+            await bot.get_channel(lfst_channel_id(key)).send(
+                "LFST cooldown expired. If the queue is still empty, anyone can now storytell."
+            )
 
 
 @bot.event
@@ -188,7 +238,6 @@ async def join(
         required=True,
     ),
 ):
-    global LFST_OPEN
     user = interaction.user
     current_time = time.time()
     join_threshold = datetime.now(timezone.utc) - timedelta(weeks=2)
@@ -203,10 +252,7 @@ async def join(
     on_cooldown = (
         str(user.id) in cooldowns and cooldowns[str(user.id)]["Cooldown"] > current_time
     )
-    lfst_window_open = (
-        LFST_OPEN and no_storyteller_active() and queue_is_empty_for(queue_type)
-    )
-    if on_cooldown and not lfst_window_open:
+    if on_cooldown and not lfst_window_open(queue_type):
         await interaction.response.send_message(
             "You are currently on cooldown and cannot join the queue."
         )
@@ -240,7 +286,6 @@ async def join(
 
     queue[str(user.id)] = new_entry
     cooldowns[str(user.id)] = cooldown_entry
-    LFST_OPEN = False
 
     await interaction.response.send_message(
         f"{user.display_name} has been added to the queue."
@@ -477,7 +522,7 @@ async def finish(interaction: nextcord.Interaction):
         elif QueueType == "Pickup":
             PICKUP_CHANNEL_ID = interaction.channel.id
             MERGED_CHANNEL_ID = interaction.channel.id
-        await notify_lfst_if_queue_empty(interaction.channel, QueueType)
+        lfst_armed.add(lfst_key_for(QueueType))
     else:
         await interaction.response.send_message("You are not active in the queue.")
 
@@ -500,7 +545,7 @@ async def forcefinish(interaction: nextcord.Interaction, player: nextcord.Member
         elif QueueType == "Pickup":
             PICKUP_CHANNEL_ID = interaction.channel.id
             MERGED_CHANNEL_ID = interaction.channel.id
-        await notify_lfst_if_queue_empty(interaction.channel, QueueType)
+        lfst_armed.add(lfst_key_for(QueueType))
     else:
         await interaction.response.send_message(
             f"{player.display_name} is not active in the queue."
@@ -841,6 +886,8 @@ async def forcestart(interaction: nextcord.Interaction, player: nextcord.Member)
 async def check_queue():
     if not GAMES_RUNNING:
         return
+
+    await lfst_tick()
 
     if MERGED:
         # Check for Active_ST in the merged queue
